@@ -136,6 +136,9 @@ model GenerationJob {
   toyId      String    @map("toy_id")
   visitorId  String    @map("visitor_id")
   status     JobStatus @default(queued)
+  /// Generation input captured at submit time: the resolved prompt + user name,
+  /// so the worker can run generateImage() without re-deriving it.
+  input      Json?
   /// R2 reference to the uploaded source image (deleted after generation, §14).
   inputRef   String?   @map("input_ref")
   resultUrl  String?   @map("result_url")

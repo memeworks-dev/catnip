@@ -14,6 +14,8 @@ export interface GenerateImageInput {
   imageMimeType?: string;
   /** Brand customisation surface from Toy.brandConfig (§16.6). */
   brand?: Record<string, unknown>;
+  /** Caption / user name baked into the result (self-insert, §9). */
+  caption?: string;
   /** Threaded for tracing (§12). */
   requestId?: string;
 }

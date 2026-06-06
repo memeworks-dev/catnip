@@ -1,56 +1,68 @@
 "use server";
 
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseBrandConfig } from "@/lib/toy/brand";
-import { buildPlaceholderMeme } from "@/lib/toy/placeholder";
+import { buildMemeBoothPrompt } from "@/lib/toy/prompt";
+import { getOrCreateVisitorId } from "@/lib/toy/visitor";
+import { isQStashConfigured, enqueueGenerationJob } from "@/lib/qstash";
+import { processGenerationJob } from "@/jobs/generate";
+import { log } from "@/lib/logger";
 
-export type GenerateMemeResult =
-  | { ok: true; imageUrl: string }
+export type SubmitResult =
+  | { ok: true; jobId: string }
   | { ok: false; reason: "not_available" | "failed" };
 
-export interface GenerateMemeInput {
+export interface SubmitMemeInput {
   slug: string;
   name: string;
 }
 
 /**
- * STUBBED generation (claude.md §16 sequencing note). Returns a branded
- * placeholder image so the public toy shell works end to end before the real
- * model is wired.
+ * Submit a meme generation (claude.md §2.3, §4A). Creates a queued
+ * GenerationJob and hands it to QStash for durable async processing; the toy
+ * then polls /api/jobs/[jobId] for the result.
  *
- * When generation is built, this is where the toy's required Catnip hooks run,
- * in order (§16.7), instead of returning a placeholder:
- *   1. per-visitor quota   2. spend-cap reserve (+ kill switch + rate limit)
- *   3. input moderation (fail closed)   4. enqueue generation job (QStash)
- *   5. output moderation   6. share-card → R2   7. analytics `run`
- *   + reconcile the reservation, write Run + CreditLedger, delete source photo.
+ * In dev (no QSTASH_TOKEN) the worker runs inline via `after()` so the poll
+ * still completes without a queue.
+ *
+ * TODO before real generation: upload + input-moderate the source photo (§8) and
+ * run the per-visitor quota + spend-cap reservation (§7) here.
  */
-export async function generateMemeStub(
-  input: GenerateMemeInput,
-): Promise<GenerateMemeResult> {
+export async function submitMemeJob(
+  input: SubmitMemeInput,
+): Promise<SubmitResult> {
   try {
-    // Re-check server-side that the toy exists and is live (defence in depth) —
-    // never trust the client about toy status.
+    // Never trust the client about toy status — re-check server-side.
     const toy = await prisma.toy.findUnique({ where: { slug: input.slug } });
     if (!toy || toy.status !== "live") {
       return { ok: false, reason: "not_available" };
     }
 
     const brand = parseBrandConfig(toy.brandConfig, toy.name);
+    const prompt = buildMemeBoothPrompt(brand, input.name);
+    const visitorId = await getOrCreateVisitorId();
 
-    // Simulate the async job latency so the loading state is visible.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-
-    const imageUrl = buildPlaceholderMeme({
-      caption: input.name.trim(),
-      brandName: brand.brandName ?? toy.name,
-      primary: brand.colors.primary,
-      accent: brand.colors.accent,
-      text: brand.colors.text,
+    const job = await prisma.generationJob.create({
+      data: {
+        toyId: toy.id,
+        visitorId,
+        status: "queued",
+        input: { prompt, name: input.name.trim() },
+      },
     });
 
-    return { ok: true, imageUrl };
-  } catch {
+    if (isQStashConfigured()) {
+      await enqueueGenerationJob(job.id);
+    } else {
+      after(() => processGenerationJob(job.id));
+    }
+
+    return { ok: true, jobId: job.id };
+  } catch (error) {
+    log.error("submitMemeJob failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return { ok: false, reason: "failed" };
   }
 }

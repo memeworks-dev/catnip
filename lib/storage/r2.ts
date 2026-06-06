@@ -1,15 +1,29 @@
-import { S3Client } from "@aws-sdk/client-s3";
-import { NotImplementedError } from "@/lib/errors";
-import { requireEnv } from "@/lib/env";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { optionalEnv, requireEnv } from "@/lib/env";
 
 /**
  * Cloudflare R2 storage (claude.md §5, §13). S3-compatible, no egress fees;
- * holds generated images and share cards. Assets are served behind SIGNED URLs
- * — raw provider URLs are never exposed (§13).
+ * holds generated images and share cards. Assets are served behind SIGNED URLs —
+ * raw provider/bucket URLs are never exposed (§13).
  *
  * Lazily constructed so the app boots without R2 credentials.
  */
 let client: S3Client | null = null;
+
+export function isR2Configured(): boolean {
+  return Boolean(
+    optionalEnv("R2_ACCOUNT_ID") &&
+      optionalEnv("R2_ACCESS_KEY_ID") &&
+      optionalEnv("R2_SECRET_ACCESS_KEY") &&
+      optionalEnv("R2_BUCKET"),
+  );
+}
 
 export function getR2(): S3Client {
   if (!client) {
@@ -36,20 +50,32 @@ export interface PutObjectInput {
   contentType: string;
 }
 
-/** Upload an object to R2. TODO: PutObjectCommand via getR2(). */
-export async function putObject(_input: PutObjectInput): Promise<void> {
-  throw new NotImplementedError("r2.putObject");
+export async function putObject(input: PutObjectInput): Promise<void> {
+  await getR2().send(
+    new PutObjectCommand({
+      Bucket: getBucket(),
+      Key: input.key,
+      Body: input.body,
+      ContentType: input.contentType,
+    }),
+  );
 }
 
-/** Presign a time-limited GET URL (§13). TODO: getSignedUrl + GetObjectCommand. */
+/** Presign a time-limited GET URL (§13). */
 export async function signedGetUrl(
-  _key: string,
-  _expiresInSeconds = 3600,
+  key: string,
+  expiresInSeconds = 3600,
 ): Promise<string> {
-  throw new NotImplementedError("r2.signedGetUrl");
+  return getSignedUrl(
+    getR2(),
+    new GetObjectCommand({ Bucket: getBucket(), Key: key }),
+    { expiresIn: expiresInSeconds },
+  );
 }
 
 /** Delete an object (used by the retention/deletion job, §14). */
-export async function deleteObject(_key: string): Promise<void> {
-  throw new NotImplementedError("r2.deleteObject");
+export async function deleteObject(key: string): Promise<void> {
+  await getR2().send(
+    new DeleteObjectCommand({ Bucket: getBucket(), Key: key }),
+  );
 }

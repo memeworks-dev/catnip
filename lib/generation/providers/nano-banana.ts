@@ -1,4 +1,5 @@
-import { NotImplementedError } from "@/lib/errors";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { optionalEnv } from "@/lib/env";
 import type {
   GenerateImageInput,
   GenerateImageResult,
@@ -7,25 +8,60 @@ import type {
 
 /**
  * Primary generation provider: Google nano banana (Gemini image) (claude.md §5).
- * We hold ~$20k of credits here, so this is the default.
- *
- * Client stub — wire with the official SDK when generation is built (Phase 2).
- *   import { GoogleGenerativeAI } from "@google/generative-ai";
- *   const client = new GoogleGenerativeAI(requireEnv("GEMINI_API_KEY"));
+ * We hold ~$20k of credits here, so this is the default. Never called from a
+ * route — only via the generateImage() dispatcher (hard rule #2).
  */
+
+// "Nano banana" is Gemini's image model. TODO: confirm the GA model id.
+const MODEL = "gemini-2.5-flash-image";
+// Representative cost per generated image, in USD. TODO: confirm against live
+// pricing — the whole business depends on this being exact (§1).
+const COST_USD = 0.039;
+
 export const nanoBananaProvider: ImageProvider = {
   id: "nano_banana",
 
   estimateCostUsd(_input: GenerateImageInput): number {
-    // TODO: return the real projected cost per image for the chosen model.
-    // The spend-cap reservation depends on this never under-estimating (§7).
-    throw new NotImplementedError("nanoBananaProvider.estimateCostUsd");
+    return COST_USD;
   },
 
-  async generate(_input: GenerateImageInput): Promise<GenerateImageResult> {
-    // TODO: call Gemini image generation with GEMINI_API_KEY, return bytes +
-    // the EXACT model cost in costUsd (§1). Run fully server-side / in the job
-    // worker; never expose the key (§13).
-    throw new NotImplementedError("nanoBananaProvider.generate");
+  async generate(input: GenerateImageInput): Promise<GenerateImageResult> {
+    const apiKey = optionalEnv("GEMINI_API_KEY");
+    if (!apiKey) {
+      // Thrown so the dispatcher falls back to the next provider.
+      throw new Error("nano_banana: GEMINI_API_KEY not configured");
+    }
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: MODEL });
+
+    const parts: Array<
+      { text: string } | { inlineData: { data: string; mimeType: string } }
+    > = [{ text: input.prompt }];
+    if (input.imageBytes && input.imageMimeType) {
+      // Self-insert: pass the source photo as inline data (§9).
+      parts.push({
+        inlineData: {
+          data: Buffer.from(input.imageBytes).toString("base64"),
+          mimeType: input.imageMimeType,
+        },
+      });
+    }
+
+    const res = await model.generateContent(parts);
+    const candidate = res.response.candidates?.[0];
+    const imagePart = candidate?.content.parts.find((p) => p.inlineData);
+    if (!imagePart?.inlineData) {
+      throw new Error("nano_banana: no image returned");
+    }
+
+    return {
+      imageBytes: new Uint8Array(
+        Buffer.from(imagePart.inlineData.data, "base64"),
+      ),
+      mimeType: imagePart.inlineData.mimeType || "image/png",
+      model: MODEL,
+      costUsd: COST_USD,
+    };
   },
 };

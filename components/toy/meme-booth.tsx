@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { BrandConfig } from "@/lib/toy/brand";
-import { generateMemeStub } from "@/app/t/[slug]/actions";
+import { submitMemeJob } from "@/app/t/[slug]/actions";
 
 interface ToySummary {
   id: string;
@@ -12,11 +12,15 @@ interface ToySummary {
 
 type Step = "form" | "generating" | "result" | "error";
 
+const POLL_INTERVAL_MS = 1500;
+const POLL_TIMEOUT_MS = 60_000;
+
 /**
  * Public meme-booth toy UI (claude.md §4A), rendered from the toy's brand_config.
- * Generation is stubbed (server action returns a placeholder image). The hooks
- * (quota, spend cap, moderation, share card, analytics) attach to this flow in
- * Phase 2 — see app/t/[slug]/actions.ts and templates/meme-booth.md §7.
+ * Generation is async (§2.3): submit creates a job, then we poll
+ * /api/jobs/[jobId] until it's done (show result) or failed (graceful state).
+ * The remaining hooks (quota, spend cap, moderation, share card, analytics)
+ * attach to this flow in Phase 2 — see templates/meme-booth.md §7.
  */
 export function MemeBooth({
   toy,
@@ -31,14 +35,23 @@ export function MemeBooth({
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Set false to cancel an in-flight poll loop (reset / unmount).
+  const pollingRef = useRef(false);
 
   // Local preview only — the source photo never leaves the browser in this
-  // stub. Real generation uploads it server-side after moderation (§8, §14).
+  // phase. Real generation uploads it server-side after moderation (§8, §14).
   useEffect(() => {
     return () => {
       if (photoUrl) URL.revokeObjectURL(photoUrl);
     };
   }, [photoUrl]);
+
+  // Stop polling if the component unmounts.
+  useEffect(() => {
+    return () => {
+      pollingRef.current = false;
+    };
+  }, []);
 
   function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -46,19 +59,49 @@ export function MemeBooth({
     setPhotoUrl(file ? URL.createObjectURL(file) : null);
   }
 
+  async function pollJob(jobId: string) {
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    while (pollingRef.current && Date.now() < deadline) {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            status: string;
+            resultUrl: string | null;
+            failed?: boolean;
+          };
+          if (data.status === "done" && data.resultUrl) {
+            setResultUrl(data.resultUrl);
+            setStep("result");
+            return;
+          }
+          if (data.failed) {
+            setStep("error");
+            return;
+          }
+        }
+      } catch {
+        // transient — keep polling until the deadline
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    if (pollingRef.current) setStep("error"); // timed out
+  }
+
   async function onGenerate() {
     setStep("generating");
     // TODO: run Turnstile here before submitting (§8).
-    const res = await generateMemeStub({ slug: toy.slug, name });
-    if (res.ok) {
-      setResultUrl(res.imageUrl);
-      setStep("result");
-    } else {
+    const res = await submitMemeJob({ slug: toy.slug, name });
+    if (!res.ok) {
       setStep("error");
+      return;
     }
+    pollingRef.current = true;
+    await pollJob(res.jobId);
   }
 
   function reset() {
+    pollingRef.current = false;
     setResultUrl(null);
     setStep("form");
   }
