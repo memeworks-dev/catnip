@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { generateImage } from "@/lib/generation";
+import { moderateImage } from "@/lib/moderation";
 import { storeGeneratedImage } from "@/lib/storage";
 import { parseBrandConfig } from "@/lib/toy/brand";
 import { computeChargeUsd, isFreeRun } from "@/lib/metering/pricing";
@@ -7,17 +8,19 @@ import { withRetry } from "@/lib/retry";
 import { log } from "@/lib/logger";
 
 /**
- * Generation worker (claude.md §2.3). Invoked by QStash via /api/jobs/generate
- * (or inline in dev). Runs generateImage() through the provider interface, stores
- * the result in R2, updates the job to `done` with cost_usd + a signed result
- * URL, and writes a Run on success.
+ * Generation worker (claude.md §2.3, §8). Invoked by QStash via /api/jobs/generate
+ * (or inline in dev). Runs generateImage() through the provider interface,
+ * OUTPUT-MODERATES the result before storing/sharing, stores the result in R2,
+ * updates the job to `done` with cost_usd + a signed result URL, and writes a Run
+ * on success.
  *
  * Retries with backoff on transient failure (withRetry); a terminal failure
- * marks the job `failed` so the toy shows a graceful state (§12), never an error.
+ * (or a rejected output) marks the job `failed` so the toy shows a graceful
+ * state (§12), never an error. Input moderation runs earlier, at submit, before
+ * the image is ever stored (see app/t/[slug]/actions.ts).
  *
- * TODO (next): input moderation on the source photo before generation, output
- * moderation before storing, and the spend-cap reserve/reconcile around this
- * (§7, §8). For now generation runs against the built prompt.
+ * TODO: pass the source photo through for self-insert (§9), and add the spend-cap
+ * reserve/reconcile around this (§7).
  */
 function extForMime(mime: string): string {
   if (mime.includes("svg")) return "svg";
@@ -71,6 +74,27 @@ export async function processGenerationJob(jobId: string): Promise<void> {
           }),
       },
     );
+
+    // OUTPUT MODERATION before storing or sharing (§8). A rejected output is
+    // never stored; the job fails and the toy shows a graceful retry state.
+    const output = await moderateImage({
+      stage: "output",
+      imageBytes: result.imageBytes,
+      mimeType: result.mimeType,
+      toyId: job.toyId,
+      requestId: job.id,
+    });
+    if (output.verdict === "reject") {
+      await prisma.generationJob.update({
+        where: { id: jobId },
+        data: { status: "failed", error: `output_moderation_rejected:${output.reason ?? ""}` },
+      });
+      log.warn("output moderation rejected — not stored", {
+        jobId,
+        reason: output.reason,
+      });
+      return;
+    }
 
     const key = `toys/${job.toyId}/results/${job.id}.${extForMime(result.mimeType)}`;
     const resultUrl = await storeGeneratedImage(

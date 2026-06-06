@@ -10,7 +10,7 @@ interface ToySummary {
   slug: string;
 }
 
-type Step = "form" | "generating" | "result" | "error";
+type Step = "form" | "generating" | "result" | "error" | "rejected";
 
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 60_000;
@@ -33,6 +33,7 @@ export function MemeBooth({
   const [name, setName] = useState("");
   const [consent, setConsent] = useState(false);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Set false to cancel an in-flight poll loop (reset / unmount).
@@ -54,8 +55,9 @@ export function MemeBooth({
   }, []);
 
   function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const file = e.target.files?.[0] ?? null;
     if (photoUrl) URL.revokeObjectURL(photoUrl);
+    setPhotoFile(file);
     setPhotoUrl(file ? URL.createObjectURL(file) : null);
   }
 
@@ -89,11 +91,18 @@ export function MemeBooth({
   }
 
   async function onGenerate() {
+    if (!photoFile) return;
     setStep("generating");
     // TODO: run Turnstile here before submitting (§8).
-    const res = await submitMemeJob({ slug: toy.slug, name });
+    const formData = new FormData();
+    formData.append("slug", toy.slug);
+    formData.append("name", name);
+    formData.append("photo", photoFile);
+
+    const res = await submitMemeJob(formData);
     if (!res.ok) {
-      setStep("error");
+      // Input moderation rejected the photo (§8) → graceful "try another" state.
+      setStep(res.reason === "moderation_rejected" ? "rejected" : "error");
       return;
     }
     pollingRef.current = true;
@@ -106,7 +115,14 @@ export function MemeBooth({
     setStep("form");
   }
 
-  const canGenerate = consent && photoUrl !== null && step === "form";
+  function chooseAnotherPhoto() {
+    if (photoUrl) URL.revokeObjectURL(photoUrl);
+    setPhotoFile(null);
+    setPhotoUrl(null);
+    reset();
+  }
+
+  const canGenerate = consent && photoFile !== null && step === "form";
 
   return (
     <main
@@ -230,6 +246,23 @@ export function MemeBooth({
               style={{ backgroundColor: brand.colors.primary }}
             >
               Try again
+            </button>
+          </div>
+        ) : null}
+
+        {step === "rejected" ? (
+          <div className="space-y-5 text-center">
+            <h2 className="text-xl font-semibold">Let&apos;s try a different photo</h2>
+            <p className="text-sm opacity-70">
+              That image didn&apos;t pass our checks. Please try another.
+            </p>
+            <button
+              type="button"
+              onClick={chooseAnotherPhoto}
+              className="w-full rounded-xl px-4 py-3 font-semibold text-white"
+              style={{ backgroundColor: brand.colors.primary }}
+            >
+              Choose another photo
             </button>
           </div>
         ) : null}
