@@ -1,0 +1,283 @@
+// Catnip data model — implements claude.md §6 (minimum, production).
+//
+// Conventions:
+//  - Money is stored as Decimal(12,4): USD with sub-cent precision, because a
+//    single generation can cost a fraction of a cent and §1/§7 demand exact
+//    cost tracking. Never use floats for money.
+//  - The CreditLedger is append-only and is the source of truth for balance
+//    (§4 "money is a ledger, not a number"). Owner.creditBalanceUsd is a
+//    cache derived from the ledger.
+//  - DB columns/tables use snake_case via @map/@@map; the Prisma client stays
+//    camelCase.
+//
+// This schema is scaffolding: it defines the shape of the data. Business logic
+// (the reserve/generate/reconcile spend-cap path, ledger writes, etc.) lives in
+// /lib and is intentionally stubbed for now — see claude.md §7.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: the connection URL lives in prisma.config.ts (for the CLI) and is
+  // passed to PrismaClient via the pg driver adapter at runtime (see lib/prisma.ts).
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Plan {
+  none
+  lifetime
+  monthly
+}
+
+enum ToyStatus {
+  draft
+  live
+  paused
+  killed
+}
+
+enum DomainStatus {
+  none
+  pending
+  verifying
+  verified
+  error
+}
+
+enum JobStatus {
+  queued
+  running
+  done
+  failed
+}
+
+enum ModerationStage {
+  input
+  output
+}
+
+enum ModerationVerdict {
+  pass
+  reject
+}
+
+// ---------------------------------------------------------------------------
+// Core tenancy: Owner -> Toy
+// ---------------------------------------------------------------------------
+
+/// The paying customer (dashboard user). Auth is handled by Clerk; this row is
+/// the local mirror keyed by email / Clerk user.
+model Owner {
+  id                    String   @id @default(cuid())
+  email                 String   @unique
+  plan                  Plan     @default(none)
+  stripeCustomerId      String?  @unique @map("stripe_customer_id")
+  /// Cached balance = SUM(CreditLedger.delta_usd). Ledger is the source of truth.
+  creditBalanceUsd      Decimal  @default(0) @map("credit_balance_usd") @db.Decimal(12, 4)
+  autoTopupEnabled      Boolean  @default(false) @map("auto_topup_enabled")
+  autoTopupThresholdUsd Decimal? @map("auto_topup_threshold_usd") @db.Decimal(12, 4)
+  autoTopupAmountUsd    Decimal? @map("auto_topup_amount_usd") @db.Decimal(12, 4)
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  toys   Toy[]
+  ledger CreditLedger[]
+
+  @@map("owners")
+}
+
+/// A toy: a public AI experience rendered dynamically from this config row
+/// (§2 multi-tenant). One app serves all toys via slug / subdomain / custom
+/// domain routing.
+model Toy {
+  id              String       @id @default(cuid())
+  ownerId         String       @map("owner_id")
+  name            String
+  slug            String       @unique
+  templateId      String       @map("template_id")
+  status          ToyStatus    @default(draft)
+  /// logo, colours, copy, prompt_style, brand_url — see template brand surface (§16.6)
+  brandConfig     Json         @default("{}") @map("brand_config")
+  perVisitorQuota Int          @default(3) @map("per_visitor_quota")
+  spendCapUsd     Decimal      @map("spend_cap_usd") @db.Decimal(12, 4)
+  spendUsedUsd    Decimal      @default(0) @map("spend_used_usd") @db.Decimal(12, 4)
+  spendReservedUsd Decimal     @default(0) @map("spend_reserved_usd") @db.Decimal(12, 4)
+  watermarkEnabled Boolean     @default(true) @map("watermark_enabled")
+  customDomain    String?      @unique @map("custom_domain")
+  domainStatus    DomainStatus @default(none) @map("domain_status")
+  domainDnsTarget String?      @map("domain_dns_target")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  owner          Owner           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  jobs           GenerationJob[]
+  runs           Run[]
+  shareEvents    ShareEvent[]
+  returnEvents   ReturnEvent[]
+  visitorQuotas  VisitorQuota[]
+  moderationLogs ModerationLog[]
+
+  @@index([ownerId])
+  @@index([status])
+  @@map("toys")
+}
+
+// ---------------------------------------------------------------------------
+// Generation pipeline
+// ---------------------------------------------------------------------------
+
+/// A durable async generation job (§2.3). Submitted by the public toy, run by a
+/// background worker (QStash), polled/subscribed for the result.
+model GenerationJob {
+  id         String    @id @default(cuid())
+  toyId      String    @map("toy_id")
+  visitorId  String    @map("visitor_id")
+  status     JobStatus @default(queued)
+  /// R2 reference to the uploaded source image (deleted after generation, §14).
+  inputRef   String?   @map("input_ref")
+  resultUrl  String?   @map("result_url")
+  model      String?
+  costUsd    Decimal?  @map("cost_usd") @db.Decimal(12, 4)
+  chargedUsd Decimal?  @map("charged_usd") @db.Decimal(12, 4)
+  error      String?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  toy Toy  @relation(fields: [toyId], references: [id], onDelete: Cascade)
+  run Run?
+
+  @@index([toyId])
+  @@index([visitorId])
+  @@index([status])
+  @@map("generation_jobs")
+}
+
+/// A completed (billable) run. One Run per successful GenerationJob.
+model Run {
+  id           String   @id @default(cuid())
+  toyId        String   @map("toy_id")
+  visitorId    String   @map("visitor_id")
+  jobId        String   @unique @map("job_id")
+  model        String
+  costUsd      Decimal  @map("cost_usd") @db.Decimal(12, 4)
+  /// cost_usd * GENERATION_MARKUP, or 0 if a free run (§11).
+  chargedUsd   Decimal  @default(0) @map("charged_usd") @db.Decimal(12, 4)
+  wasFree      Boolean  @default(false) @map("was_free")
+  resultUrl    String?  @map("result_url")
+  shareCardUrl String?  @map("share_card_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  toy         Toy            @relation(fields: [toyId], references: [id], onDelete: Cascade)
+  job         GenerationJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  ledger      CreditLedger[]
+  shareEvents ShareEvent[]
+
+  @@index([toyId])
+  @@index([visitorId])
+  @@map("runs")
+}
+
+// ---------------------------------------------------------------------------
+// Money: append-only ledger (§4, §11)
+// ---------------------------------------------------------------------------
+
+/// Append-only. Every spend (- delta) and every top-up (+ delta) writes a row.
+/// Balance is SUM(delta_usd); balance_after_usd is the running total at write
+/// time for audit. stripe_event_id enforces webhook idempotency.
+model CreditLedger {
+  id              String   @id @default(cuid())
+  ownerId         String   @map("owner_id")
+  deltaUsd        Decimal  @map("delta_usd") @db.Decimal(12, 4)
+  reason          String
+  runId           String?  @map("run_id")
+  stripeEventId   String?  @unique @map("stripe_event_id")
+  balanceAfterUsd Decimal  @map("balance_after_usd") @db.Decimal(12, 4)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  owner Owner @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  run   Run?  @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId])
+  @@index([runId])
+  @@map("credit_ledger")
+}
+
+// ---------------------------------------------------------------------------
+// Virality + analytics (§9, §10)
+// ---------------------------------------------------------------------------
+
+model ShareEvent {
+  id        String   @id @default(cuid())
+  runId     String   @map("run_id")
+  toyId     String   @map("toy_id")
+  /// e.g. "x", "whatsapp", "copy_link", "instagram"
+  channel   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+  toy Toy @relation(fields: [toyId], references: [id], onDelete: Cascade)
+
+  @@index([toyId])
+  @@index([runId])
+  @@map("share_events")
+}
+
+model ReturnEvent {
+  id        String   @id @default(cuid())
+  toyId     String   @map("toy_id")
+  utmSource String?  @map("utm_source")
+  visitorId String?  @map("visitor_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  toy Toy @relation(fields: [toyId], references: [id], onDelete: Cascade)
+
+  @@index([toyId])
+  @@map("return_events")
+}
+
+/// Durable backstop for per-visitor quota (§7). Redis is the fast path; this is
+/// the authoritative count that survives cache loss.
+model VisitorQuota {
+  toyId     String @map("toy_id")
+  visitorId String @map("visitor_id")
+  runsUsed  Int    @default(0) @map("runs_used")
+
+  toy Toy @relation(fields: [toyId], references: [id], onDelete: Cascade)
+
+  @@id([toyId, visitorId])
+  @@map("visitor_quota")
+}
+
+// ---------------------------------------------------------------------------
+// Safety + ops (§8, §12)
+// ---------------------------------------------------------------------------
+
+/// Every moderation decision is logged (§8). Append-only audit trail.
+model ModerationLog {
+  id        String            @id @default(cuid())
+  toyId     String            @map("toy_id")
+  stage     ModerationStage
+  verdict   ModerationVerdict
+  reason    String?
+  createdAt DateTime          @default(now()) @map("created_at")
+
+  toy Toy @relation(fields: [toyId], references: [id], onDelete: Cascade)
+
+  @@index([toyId])
+  @@map("moderation_logs")
+}
+
+/// Idempotency guard for inbound webhooks (Stripe, QStash) — §12. A duplicate
+/// delivery hits the unique (source, external_id) and is skipped.
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  source      String
+  externalId  String   @map("external_id")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@unique([source, externalId])
+  @@map("webhook_events")
+}
