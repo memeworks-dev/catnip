@@ -16,7 +16,8 @@ export type GracefulStateKind =
   | "moderation_rejected"
   | "generation_failed"
   | "provider_down"
-  | "paused";
+  | "paused"
+  | "not_available";
 
 const COPY: Record<GracefulStateKind, { title: string; body: string }> = {
   cap_reached: {
@@ -50,6 +51,10 @@ const COPY: Record<GracefulStateKind, { title: string; body: string }> = {
   paused: {
     title: "Taking a quick break 🐈",
     body: "This toy is paused right now. Check back soon!",
+  },
+  not_available: {
+    title: "This toy isn't available",
+    body: "It may be unpublished or no longer active. Check back soon!",
   },
 };
 

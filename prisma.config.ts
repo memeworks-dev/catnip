@@ -14,6 +14,7 @@ export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
+    seed: "tsx prisma/seed.ts",
   },
   // Used by migrate / introspect / studio. Read directly (not via the throwing
   // env() helper) so `prisma generate` still works with no DATABASE_URL set —
