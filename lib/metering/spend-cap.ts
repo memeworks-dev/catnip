@@ -139,12 +139,12 @@ export async function reconcileSuccess(params: {
   model: string;
   costUsd: number;
   resultUrl: string;
-}): Promise<{ chargedUsd: number; wasFree: boolean }> {
+}): Promise<{ runId: string; chargedUsd: number; wasFree: boolean }> {
   const { reservation, jobId, visitorId, model, costUsd, resultUrl } = params;
   const { toyId, ownerId, projectedChargeUsd, isFree } = reservation;
   const chargedUsd = isFree ? 0 : computeChargeUsd(costUsd);
 
-  await prisma.$transaction(async (tx) => {
+  const runId = await prisma.$transaction(async (tx) => {
     // Move reserved -> used (release the projected reservation, book the actual).
     await tx.$executeRaw`
       UPDATE toys
@@ -152,7 +152,7 @@ export async function reconcileSuccess(params: {
              spend_used_usd = spend_used_usd + ${chargedUsd}::numeric
        WHERE id = ${toyId}`;
 
-    await tx.run.create({
+    const run = await tx.run.create({
       data: {
         toyId,
         visitorId,
@@ -163,6 +163,7 @@ export async function reconcileSuccess(params: {
         wasFree: isFree,
         resultUrl,
       },
+      select: { id: true },
     });
 
     // Money is a ledger (§4): a billable run writes a debit + updates the cache.
@@ -172,10 +173,6 @@ export async function reconcileSuccess(params: {
         select: { creditBalanceUsd: true },
       });
       const balanceAfter = Number(owner.creditBalanceUsd) - chargedUsd;
-      const run = await tx.run.findUniqueOrThrow({
-        where: { jobId },
-        select: { id: true },
-      });
       await tx.creditLedger.create({
         data: {
           ownerId,
@@ -190,10 +187,12 @@ export async function reconcileSuccess(params: {
         data: { creditBalanceUsd: balanceAfter },
       });
     }
+
+    return run.id;
   });
 
   void mirrorSpend(toyId);
-  return { chargedUsd, wasFree: isFree };
+  return { runId, chargedUsd, wasFree: isFree };
 }
 
 /** Step 3 (failure) — release the full reservation and charge nothing. */

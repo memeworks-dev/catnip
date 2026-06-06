@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { generateImage } from "@/lib/generation";
 import { moderateImage } from "@/lib/moderation";
 import { storeGeneratedImage } from "@/lib/storage";
+import { renderShareCard } from "@/lib/share/card";
+import { isRasterImageRef } from "@/lib/share/util";
 import { parseBrandConfig } from "@/lib/toy/brand";
 import {
   reconcileSuccess,
@@ -124,7 +126,7 @@ export async function processGenerationJob(jobId: string): Promise<void> {
 
     // RECONCILE (success): release reservation, book actual spend, write Run +
     // CreditLedger debit (§7, §11).
-    const { chargedUsd } = await reconcileSuccess({
+    const { runId, chargedUsd } = await reconcileSuccess({
       reservation,
       jobId: job.id,
       visitorId: job.visitorId,
@@ -143,6 +145,33 @@ export async function processGenerationJob(jobId: string): Promise<void> {
         resultUrl,
       },
     });
+
+    // Share card (§9): render with Vercel OG, store in R2, save on the Run. The
+    // meme bytes are embedded directly so satori doesn't need to refetch. Failure
+    // here is non-fatal — the run still succeeds.
+    try {
+      const memeDataUri = `data:${result.mimeType};base64,${Buffer.from(result.imageBytes).toString("base64")}`;
+      const card = renderShareCard({
+        memeUrl: memeDataUri,
+        isRaster: isRasterImageRef(memeDataUri),
+        caption: input.name?.trim() || undefined,
+        brandName: brand.brandName ?? job.toy.name,
+        logoUrl: brand.logoUrl,
+        watermark: job.toy.watermarkEnabled,
+        primary: brand.colors.primary,
+        accent: brand.colors.accent,
+      });
+      const cardBytes = new Uint8Array(await card.arrayBuffer());
+      const cardKey = `toys/${job.toyId}/cards/${runId}.png`;
+      const shareCardUrl = await storeGeneratedImage(cardKey, cardBytes, "image/png");
+      await prisma.run.update({ where: { id: runId }, data: { shareCardUrl } });
+    } catch (cardError) {
+      log.warn("share card generation failed (non-fatal)", {
+        jobId,
+        runId,
+        error: cardError instanceof Error ? cardError.message : String(cardError),
+      });
+    }
 
     log.info("generation job done", { jobId, model: result.model });
   } catch (error) {

@@ -15,7 +15,7 @@ export async function GET(
 
   const job = await prisma.generationJob.findUnique({
     where: { id: jobId },
-    select: { status: true, resultUrl: true },
+    select: { status: true, resultUrl: true, run: { select: { id: true } } },
   });
   if (!job) {
     return Response.json({ error: "not_found" }, { status: 404 });
@@ -24,6 +24,7 @@ export async function GET(
   return Response.json({
     status: job.status,
     resultUrl: job.status === "done" ? job.resultUrl : null,
+    runId: job.run?.id ?? null,
     failed: job.status === "failed",
   });
 }

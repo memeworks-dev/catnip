@@ -1,11 +1,14 @@
 import { NotImplementedError } from "@/lib/errors";
+import { getPostHog } from "@/lib/analytics/posthog";
 
 export { getPostHog } from "@/lib/analytics/posthog";
 
 /**
  * Analytics + K-factor (claude.md §10). Thin typed event helpers over PostHog.
- * Compute share rate (shares / runs) and an approximate K-factor for the
- * dashboard. Respect cookie consent on the public toy (§14).
+ *
+ * The capture helpers no-op gracefully when PostHog isn't configured, so the
+ * run/share/return paths never fail on analytics. (The dashboard K-factor
+ * computation is a §10 follow-up.)
  */
 
 export interface RunEvent {
@@ -28,16 +31,38 @@ export interface ReturnEvent {
   utmSource?: string;
 }
 
-export async function captureRun(_event: RunEvent): Promise<void> {
-  throw new NotImplementedError("analytics.captureRun");
+async function capture(
+  distinctId: string,
+  event: string,
+  properties: Record<string, unknown>,
+): Promise<void> {
+  const ph = getPostHog();
+  if (!ph) return; // not configured — no-op
+  ph.capture({ distinctId, event, properties });
+  await ph.flush(); // serverless: ensure delivery
 }
 
-export async function captureShare(_event: ShareEvent): Promise<void> {
-  throw new NotImplementedError("analytics.captureShare");
+export async function captureRun(event: RunEvent): Promise<void> {
+  await capture(event.visitorId, "run", {
+    toy_id: event.toyId,
+    run_id: event.runId,
+    was_free: event.wasFree,
+  });
 }
 
-export async function captureReturn(_event: ReturnEvent): Promise<void> {
-  throw new NotImplementedError("analytics.captureReturn");
+export async function captureShare(event: ShareEvent): Promise<void> {
+  await capture(event.visitorId, "share", {
+    toy_id: event.toyId,
+    run_id: event.runId,
+    channel: event.channel,
+  });
+}
+
+export async function captureReturn(event: ReturnEvent): Promise<void> {
+  await capture(event.visitorId ?? "anonymous", "return", {
+    toy_id: event.toyId,
+    utm_source: event.utmSource,
+  });
 }
 
 export interface ViralityMetrics {

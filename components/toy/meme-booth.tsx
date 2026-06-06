@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { BrandConfig } from "@/lib/toy/brand";
 import { submitMemeJob } from "@/app/t/[slug]/actions";
+import { recordShare, recordReturn } from "@/app/t/[slug]/share-actions";
+import { buildShareUrl } from "@/lib/share/util";
 import {
   GracefulState,
   type GracefulStateKind,
@@ -44,9 +46,12 @@ const POLL_TIMEOUT_MS = 60_000;
 export function MemeBooth({
   toy,
   brand,
+  returnUtmSource,
 }: {
   toy: ToySummary;
   brand: BrandConfig;
+  /** utm_source from the landing URL; "catnip" => a return visit (§9). */
+  returnUtmSource?: string;
 }) {
   const [step, setStep] = useState<Step>("form");
   const [name, setName] = useState("");
@@ -54,11 +59,22 @@ export function MemeBooth({
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
   const [softWallKind, setSoftWallKind] =
     useState<GracefulStateKind>("cap_reached");
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Set false to cancel an in-flight poll loop (reset / unmount).
   const pollingRef = useRef(false);
+  // Ensure the return event fires at most once per mount.
+  const returnRecorded = useRef(false);
+
+  // Return tracking (§9): a visitor arriving via a Catnip UTM link is a return.
+  useEffect(() => {
+    if (returnUtmSource === "catnip" && !returnRecorded.current) {
+      returnRecorded.current = true;
+      void recordReturn({ toyId: toy.id, utmSource: returnUtmSource });
+    }
+  }, [returnUtmSource, toy.id]);
 
   // Local preview only — the source photo never leaves the browser in this
   // phase. Real generation uploads it server-side after moderation (§8, §14).
@@ -91,10 +107,12 @@ export function MemeBooth({
           const data = (await res.json()) as {
             status: string;
             resultUrl: string | null;
+            runId: string | null;
             failed?: boolean;
           };
           if (data.status === "done" && data.resultUrl) {
             setResultUrl(data.resultUrl);
+            setRunId(data.runId);
             setStep("result");
             return;
           }
@@ -257,6 +275,7 @@ export function MemeBooth({
             imageUrl={resultUrl}
             brand={brand}
             toy={toy}
+            runId={runId}
             onAgain={reset}
           />
         ) : null}
@@ -305,23 +324,30 @@ function ResultScreen({
   imageUrl,
   brand,
   toy,
+  runId,
   onAgain,
 }: {
   imageUrl: string;
   brand: BrandConfig;
   toy: ToySummary;
+  runId: string | null;
   onAgain: () => void;
 }) {
   // Share links carry UTM params so returns are attributable (§9, §10).
   const shareUrl =
     typeof window !== "undefined"
-      ? `${window.location.origin}/t/${toy.slug}?utm_source=catnip&utm_toy=${toy.id}`
+      ? buildShareUrl(window.location.origin, toy.slug, toy.id, runId ?? undefined)
       : `/t/${toy.slug}`;
   const shareText = `Check out the meme I made${
     brand.brandName ? ` with ${brand.brandName}` : ""
   }!`;
 
+  // Each share writes a ShareEvent (§9). Fire-and-forget; the share still opens.
+  function track(channel: string) {
+    if (runId) void recordShare({ runId, channel });
+  }
   function copyLink() {
+    track("copy_link");
     void navigator.clipboard?.writeText(shareUrl);
   }
 
@@ -342,6 +368,7 @@ function ResultScreen({
           )}&url=${encodeURIComponent(shareUrl)}`}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={() => track("x")}
           className="rounded-xl border px-3 py-3 text-center"
           style={{ borderColor: brand.colors.primary }}
         >
@@ -353,6 +380,7 @@ function ResultScreen({
           )}`}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={() => track("whatsapp")}
           className="rounded-xl border px-3 py-3 text-center"
           style={{ borderColor: brand.colors.primary }}
         >
