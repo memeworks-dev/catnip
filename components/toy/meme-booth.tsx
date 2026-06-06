@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { BrandConfig } from "@/lib/toy/brand";
 import { submitMemeJob } from "@/app/t/[slug]/actions";
+import {
+  GracefulState,
+  type GracefulStateKind,
+} from "@/components/graceful-state";
 
 interface ToySummary {
   id: string;
@@ -10,7 +14,22 @@ interface ToySummary {
   slug: string;
 }
 
-type Step = "form" | "generating" | "result" | "error" | "rejected";
+type Step =
+  | "form"
+  | "generating"
+  | "result"
+  | "error"
+  | "rejected"
+  | "softwall";
+
+const SOFT_WALL_KIND: Record<string, GracefulStateKind> = {
+  spend_cap: "cap_reached",
+  credits_out: "credits_out",
+  quota_reached: "quota_reached",
+  rate_limited: "rate_limited",
+  paused: "paused",
+  not_available: "not_available",
+};
 
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 60_000;
@@ -35,6 +54,8 @@ export function MemeBooth({
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [softWallKind, setSoftWallKind] =
+    useState<GracefulStateKind>("cap_reached");
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Set false to cancel an in-flight poll loop (reset / unmount).
   const pollingRef = useRef(false);
@@ -101,8 +122,15 @@ export function MemeBooth({
 
     const res = await submitMemeJob(formData);
     if (!res.ok) {
-      // Input moderation rejected the photo (§8) → graceful "try another" state.
-      setStep(res.reason === "moderation_rejected" ? "rejected" : "error");
+      if (res.reason === "moderation_rejected") {
+        setStep("rejected"); // §8 → "try a different photo"
+      } else if (res.reason in SOFT_WALL_KIND) {
+        // §7 soft walls: cap reached, credits out, quota, rate limit, paused.
+        setSoftWallKind(SOFT_WALL_KIND[res.reason]);
+        setStep("softwall");
+      } else {
+        setStep("error");
+      }
       return;
     }
     pollingRef.current = true;
@@ -266,6 +294,8 @@ export function MemeBooth({
             </button>
           </div>
         ) : null}
+
+        {step === "softwall" ? <GracefulState kind={softWallKind} /> : null}
       </div>
     </main>
   );

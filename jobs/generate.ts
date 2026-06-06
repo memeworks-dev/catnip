@@ -3,30 +3,39 @@ import { generateImage } from "@/lib/generation";
 import { moderateImage } from "@/lib/moderation";
 import { storeGeneratedImage } from "@/lib/storage";
 import { parseBrandConfig } from "@/lib/toy/brand";
-import { computeChargeUsd, isFreeRun } from "@/lib/metering/pricing";
+import {
+  reconcileSuccess,
+  reconcileFailure,
+  type Reservation,
+} from "@/lib/metering/spend-cap";
 import { withRetry } from "@/lib/retry";
 import { log } from "@/lib/logger";
 
 /**
- * Generation worker (claude.md §2.3, §8). Invoked by QStash via /api/jobs/generate
- * (or inline in dev). Runs generateImage() through the provider interface,
- * OUTPUT-MODERATES the result before storing/sharing, stores the result in R2,
- * updates the job to `done` with cost_usd + a signed result URL, and writes a Run
- * on success.
+ * Generation worker (claude.md §2.3, §7, §8). Invoked by QStash via
+ * /api/jobs/generate (or inline in dev). Implements the back half of the sacred
+ * path:
+ *   generate (with retry+backoff) → OUTPUT MODERATION before storing → store in
+ *   R2 → RECONCILE the spend reservation (success: move reserved→used, write Run
+ *   + CreditLedger; failure/reject: release the reservation, charge nothing).
  *
- * Retries with backoff on transient failure (withRetry); a terminal failure
- * (or a rejected output) marks the job `failed` so the toy shows a graceful
- * state (§12), never an error. Input moderation runs earlier, at submit, before
- * the image is ever stored (see app/t/[slug]/actions.ts).
+ * The reservation was made at submit (reserve → generate → reconcile). A
+ * terminal failure or rejected output marks the job `failed` so the toy shows a
+ * graceful state (§12), never an error.
  *
- * TODO: pass the source photo through for self-insert (§9), and add the spend-cap
- * reserve/reconcile around this (§7).
+ * TODO: pass the source photo through for self-insert (§9).
  */
 function extForMime(mime: string): string {
   if (mime.includes("svg")) return "svg";
   if (mime.includes("png")) return "png";
   if (mime.includes("webp")) return "webp";
   return "jpg";
+}
+
+interface JobInput {
+  prompt?: string;
+  name?: string;
+  reservation?: { projectedChargeUsd?: number; isFree?: boolean };
 }
 
 export async function processGenerationJob(jobId: string): Promise<void> {
@@ -46,8 +55,17 @@ export async function processGenerationJob(jobId: string): Promise<void> {
     data: { status: "running", attempts: { increment: 1 } },
   });
 
-  const input = (job.input as { prompt?: string; name?: string } | null) ?? {};
+  const input = (job.input as JobInput | null) ?? {};
   const brand = parseBrandConfig(job.toy.brandConfig, job.toy.name);
+
+  // The reservation made at submit. Defaults keep directly-created jobs (tests)
+  // working: release/charge nothing.
+  const reservation: Reservation = {
+    toyId: job.toyId,
+    ownerId: job.toy.ownerId,
+    projectedChargeUsd: input.reservation?.projectedChargeUsd ?? 0,
+    isFree: input.reservation?.isFree ?? true,
+  };
 
   try {
     const result = await withRetry(
@@ -76,7 +94,7 @@ export async function processGenerationJob(jobId: string): Promise<void> {
     );
 
     // OUTPUT MODERATION before storing or sharing (§8). A rejected output is
-    // never stored; the job fails and the toy shows a graceful retry state.
+    // never stored; release the reservation and fail to a graceful state.
     const output = await moderateImage({
       stage: "output",
       imageBytes: result.imageBytes,
@@ -85,6 +103,7 @@ export async function processGenerationJob(jobId: string): Promise<void> {
       requestId: job.id,
     });
     if (output.verdict === "reject") {
+      await reconcileFailure(reservation);
       await prisma.generationJob.update({
         where: { id: jobId },
         data: { status: "failed", error: `output_moderation_rejected:${output.reason ?? ""}` },
@@ -103,10 +122,16 @@ export async function processGenerationJob(jobId: string): Promise<void> {
       result.mimeType,
     );
 
-    // First FREE_RUNS_PER_TOY runs per toy are free; cost is still logged (§11).
-    const priorRuns = await prisma.run.count({ where: { toyId: job.toyId } });
-    const wasFree = isFreeRun(priorRuns);
-    const chargedUsd = wasFree ? 0 : computeChargeUsd(result.costUsd);
+    // RECONCILE (success): release reservation, book actual spend, write Run +
+    // CreditLedger debit (§7, §11).
+    const { chargedUsd } = await reconcileSuccess({
+      reservation,
+      jobId: job.id,
+      visitorId: job.visitorId,
+      model: result.model,
+      costUsd: result.costUsd,
+      resultUrl,
+    });
 
     await prisma.generationJob.update({
       where: { id: jobId },
@@ -119,22 +144,10 @@ export async function processGenerationJob(jobId: string): Promise<void> {
       },
     });
 
-    // Write the Run on success (§6, §11).
-    await prisma.run.create({
-      data: {
-        toyId: job.toyId,
-        visitorId: job.visitorId,
-        jobId: job.id,
-        model: result.model,
-        costUsd: result.costUsd,
-        chargedUsd,
-        wasFree,
-        resultUrl,
-      },
-    });
-
-    log.info("generation job done", { jobId, model: result.model, wasFree });
+    log.info("generation job done", { jobId, model: result.model });
   } catch (error) {
+    // RECONCILE (failure): release the full reservation, charge nothing (§7).
+    await reconcileFailure(reservation);
     const message = error instanceof Error ? error.message : String(error);
     await prisma.generationJob.update({
       where: { id: jobId },

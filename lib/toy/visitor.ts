@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 /**
  * Stable per-visitor id, stored in an httpOnly cookie. Used to attribute
@@ -20,4 +20,12 @@ export async function getOrCreateVisitorId(): Promise<string> {
     path: "/",
   });
   return id;
+}
+
+/** Best-effort client IP for per-IP rate limiting (§7, §13). */
+export async function getClientIp(): Promise<string> {
+  const h = await headers();
+  const forwarded = h.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0]!.trim();
+  return h.get("x-real-ip") ?? "0.0.0.0";
 }

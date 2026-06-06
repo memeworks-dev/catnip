@@ -24,7 +24,10 @@ const globalForPrisma = globalThis as unknown as {
 
 function getClient(): PrismaClient {
   if (!globalForPrisma.prisma) {
-    const adapter = new PrismaPg(requireEnv("DATABASE_URL"));
+    const adapter = new PrismaPg({
+      connectionString: requireEnv("DATABASE_URL"),
+      max: 20,
+    });
     globalForPrisma.prisma = new PrismaClient({ adapter });
   }
   return globalForPrisma.prisma;
