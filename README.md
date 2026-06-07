@@ -149,6 +149,34 @@ Health check: `GET http://localhost:3000/api/health`.
 
 ---
 
+## Deploying to Vercel
+
+The app builds without a database (the Prisma client is lazy), but every
+data-backed page — the **dashboard** and the public toys — needs the schema
+applied to your production Postgres. The build does this for you:
+
+```
+build = node scripts/migrate-deploy.mjs && next build
+```
+
+`migrate-deploy.mjs` runs `prisma migrate deploy` when `DATABASE_URL` (or
+`DIRECT_URL`) is set, and skips cleanly when neither is — so a missing schema
+can't silently 500 the dashboard. Required env to set in Vercel:
+
+- `DATABASE_URL` — pooled runtime connection.
+- `DIRECT_URL` — *optional*, the direct (non-pooled) connection. **Set this for
+  Supabase** (the transaction pooler on `:6543` can't run migrations); migrations
+  use it when present.
+- Clerk keys (`CLERK_SECRET_KEY` + `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`) to protect
+  the dashboard — set **both** or neither (one alone disables auth).
+
+**Check it after deploy:** `GET /api/health/ready` reports whether the database is
+reachable and the schema is migrated, e.g.
+`{"ok":false,"checks":{"schema":"missing", …}}` means migrations didn't run.
+`GET /api/health` is a dependency-free liveness probe.
+
+---
+
 ## Custom domains (§2A)
 
 An owner can serve a toy on their own domain (e.g. `meme.theirbrand.com`) instead

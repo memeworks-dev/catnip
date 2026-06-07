@@ -20,7 +20,11 @@ export default defineConfig({
   // env() helper) so `prisma generate` still works with no DATABASE_URL set —
   // generate doesn't touch the DB. Migrate commands error clearly if it's unset.
   // The runtime client gets its URL via the pg driver adapter in lib/prisma.ts.
+  //
+  // Prefer DIRECT_URL for migrations: poolers (e.g. Supabase's transaction pooler
+  // on :6543) can't run migrations, so set DIRECT_URL to the direct connection
+  // while DATABASE_URL stays the pooled runtime URL. Falls back to DATABASE_URL.
   datasource: {
-    url: process.env.DATABASE_URL,
+    url: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
   },
 });
