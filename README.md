@@ -184,8 +184,9 @@ blocked. Removing a domain detaches it from Vercel and clears the fields.
 - Set `CRON_SECRET`; Vercel Cron sends it as `Authorization: Bearer <secret>` and
   the cron route rejects calls without it.
 
-> The cron schedule in `vercel.json` is hourly. Vercel **Hobby** allows only
-> daily crons — change it to e.g. `0 0 * * *` there, or rely on "Check now".
+> The cron schedule in `vercel.json` is daily (`0 0 * * *`) so it works on Vercel
+> **Hobby** (which caps crons at once per day). On **Pro** you can poll more
+> often, e.g. `0 * * * *` (hourly). "Check now" verifies on demand regardless.
 
 ---
 
