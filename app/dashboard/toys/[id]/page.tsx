@@ -9,6 +9,7 @@ import { estimateCostUsd } from "@/lib/generation";
 import { toyUrl, embedSnippet } from "@/lib/embed";
 import { formatUsd, toNumber } from "@/lib/format";
 import { ToyForm } from "@/components/dashboard/toy-form";
+import { DomainSection } from "@/components/dashboard/domain-section";
 import {
   publishToy,
   pauseToy,
@@ -28,10 +29,13 @@ const STATUS_STYLE: Record<string, string> = {
 
 export default async function ToyDashboardPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ domainError?: string }>;
 }) {
   const { id } = await params;
+  const { domainError } = await searchParams;
   const owner = await requireOwner();
 
   // TENANT ISOLATION (hard rule #8): scope by ownerId.
@@ -164,6 +168,9 @@ export default async function ToyDashboardPage({
             : "This toy isn’t live right now."}
         </p>
       )}
+
+      {/* Custom domain (§2A) */}
+      <DomainSection toy={toy} domainError={domainError} />
 
       {/* Edit */}
       <details className="rounded-2xl border border-neutral-200 bg-white p-5">

@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { prisma } from "@/lib/prisma";
 import { appConfig } from "@/lib/env";
 import { GracefulState } from "@/components/graceful-state";
 import { MemeBooth } from "@/components/toy/meme-booth";
 import { parseBrandConfig } from "@/lib/toy/brand";
+import { resolvePublicToy } from "@/lib/toy/resolve";
 
 // Toys render dynamically from their DB row (claude.md §2, hard rule #7) — never
 // statically prerendered.
@@ -31,10 +31,7 @@ export async function generateMetadata({
   const sp = await searchParams;
   const runId = firstParam(sp.utm_run);
 
-  const toy = await prisma.toy.findUnique({
-    where: { slug },
-    select: { name: true, brandConfig: true },
-  });
+  const toy = await resolvePublicToy(slug);
   const brand = toy ? parseBrandConfig(toy.brandConfig, toy.name) : null;
   const title = brand?.copy.headline ?? toy?.name ?? "Catnip";
   const description = brand?.copy.subhead ?? "Make your meme with Catnip.";
@@ -68,7 +65,7 @@ export default async function ToyPage({
   const { slug } = await params;
   const sp = await searchParams;
 
-  const toy = await prisma.toy.findUnique({ where: { slug } });
+  const toy = await resolvePublicToy(slug);
   if (!toy) {
     notFound();
   }
