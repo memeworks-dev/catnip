@@ -19,4 +19,6 @@ Rules that apply to every job:
 - **Retries with backoff** are owned by QStash; terminal failures surface as
   graceful states on the toy, never raw errors (§12).
 
-All functions are typed stubs for now (`NotImplementedError`).
+`verify-domains.ts` is implemented (custom domains, §2A) and runs via
+`/api/cron/verify-domains`; `reconcile.ts` and `retention.ts` are still typed
+stubs (`NotImplementedError`).

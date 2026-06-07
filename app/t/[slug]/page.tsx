@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { prisma } from "@/lib/prisma";
 import { appConfig } from "@/lib/env";
 import { GracefulState } from "@/components/graceful-state";
 import { MemeBooth } from "@/components/toy/meme-booth";
 import { parseBrandConfig } from "@/lib/toy/brand";
+import { resolveToyByRouteKey } from "@/lib/toy/resolve";
 
 // Toys render dynamically from their DB row (claude.md §2, hard rule #7) — never
 // statically prerendered.
@@ -31,10 +31,7 @@ export async function generateMetadata({
   const sp = await searchParams;
   const runId = firstParam(sp.utm_run);
 
-  const toy = await prisma.toy.findUnique({
-    where: { slug },
-    select: { name: true, brandConfig: true },
-  });
+  const toy = await resolveToyByRouteKey(slug);
   const brand = toy ? parseBrandConfig(toy.brandConfig, toy.name) : null;
   const title = brand?.copy.headline ?? toy?.name ?? "Catnip";
   const description = brand?.copy.subhead ?? "Make your meme with Catnip.";
@@ -51,12 +48,13 @@ export async function generateMetadata({
 
 /**
  * Public toy route: catnip.io/t/[slug] (§2, §4A). Strangers touch this. One app
- * serves every toy: look up the Toy by slug, and either render its meme booth
- * from brand_config or show a graceful state.
+ * serves every toy: resolve the Toy from the route key and either render its meme
+ * booth from brand_config or show a graceful state.
  *
- * Also reached via [slug].catnip.io and verified custom domains through the
- * host-based proxy (§2A). Every failure path is a graceful branded state, never a
- * raw error (§12, hard rule #5).
+ * The route key is a slug for catnip.io/t/[slug] and *.catnip.io, or a verified
+ * custom-domain host when the proxy rewrites one here (§2A) — same renderer, same
+ * metering, quota, moderation, share, and analytics. Every failure path is a
+ * graceful branded state, never a raw error (§12, hard rule #5).
  */
 export default async function ToyPage({
   params,
@@ -68,7 +66,7 @@ export default async function ToyPage({
   const { slug } = await params;
   const sp = await searchParams;
 
-  const toy = await prisma.toy.findUnique({ where: { slug } });
+  const toy = await resolveToyByRouteKey(slug);
   if (!toy) {
     notFound();
   }

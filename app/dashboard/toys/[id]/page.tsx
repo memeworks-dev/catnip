@@ -8,7 +8,10 @@ import { freeRunsRemaining, isFreeRun, computeChargeUsd } from "@/lib/metering/p
 import { estimateCostUsd } from "@/lib/generation";
 import { toyUrl, embedSnippet } from "@/lib/embed";
 import { formatUsd, toNumber } from "@/lib/format";
+import { appConfig } from "@/lib/env";
+import { parseRecords, isDomainsConfigured } from "@/lib/domains";
 import { ToyForm } from "@/components/dashboard/toy-form";
+import { CustomDomain } from "@/components/dashboard/custom-domain";
 import {
   publishToy,
   pauseToy,
@@ -164,6 +167,17 @@ export default async function ToyDashboardPage({
             : "This toy isn’t live right now."}
         </p>
       )}
+
+      {/* Custom domain (§2A) */}
+      <CustomDomain
+        toyId={toy.id}
+        slug={toy.slug}
+        rootDomain={appConfig.rootDomain}
+        customDomain={toy.customDomain}
+        domainStatus={toy.domainStatus}
+        records={parseRecords(toy.domainDnsTarget)}
+        configured={isDomainsConfigured()}
+      />
 
       {/* Edit */}
       <details className="rounded-2xl border border-neutral-200 bg-white p-5">

@@ -149,6 +149,46 @@ Health check: `GET http://localhost:3000/api/health`.
 
 ---
 
+## Custom domains (§2A)
+
+An owner can serve a toy on their own domain (e.g. `meme.theirbrand.com`) instead
+of (or alongside) `slug.catnip.io`. It reuses the multi-tenant render — a custom
+domain is just another route into the same toy, never a separate deployment.
+
+**How it works**
+
+1. Owner enters a domain in the dashboard → it's added to the Vercel project via
+   the Vercel Domains API and stored on the `Toy` with `domain_status = pending`
+   plus the DNS record Vercel needs.
+2. The dashboard shows the exact record to set (CNAME → `cname.vercel-dns.com`,
+   or an A record for an apex) with copy buttons and a clear
+   pending / verifying / verified / error state.
+3. Verification runs on demand ("Check now") and on a Vercel Cron poll
+   (`/api/cron/verify-domains`, hourly). On success Vercel auto-provisions SSL and
+   `domain_status` flips to `verified`.
+4. `proxy.ts` resolves the incoming `Host` header to a toy — for verified custom
+   domains and `*.catnip.io` subdomains — and renders it identically (same
+   metering, quota, moderation, share, analytics).
+
+A domain maps to exactly one toy (unique + ownership-checked). Until it's
+verified the toy keeps serving on its `catnip.io` slug, so the owner is never
+blocked. Removing a domain detaches it from Vercel and clears the fields.
+
+**Setup on Vercel**
+
+- Point a wildcard `*.catnip.io` (and the apex) at the Catnip project so per-toy
+  subdomains resolve (§2).
+- Set `VERCEL_API_TOKEN`, `VERCEL_PROJECT_ID` (the Catnip project — `prj_…` or its
+  name), and `VERCEL_TEAM_ID` if the project is under a team.
+- Set `ROOT_DOMAIN` (defaults to `catnip.io`) — drives subdomain routing.
+- Set `CRON_SECRET`; Vercel Cron sends it as `Authorization: Bearer <secret>` and
+  the cron route rejects calls without it.
+
+> The cron schedule in `vercel.json` is hourly. Vercel **Hobby** allows only
+> daily crons — change it to e.g. `0 0 * * *` there, or rely on "Check now".
+
+---
+
 ## Notes for the next phase
 
 - **Spend cap is sacred** (§7, hard rule #1): implement reserve→generate→
