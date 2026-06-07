@@ -1,14 +1,23 @@
-import { NotImplementedError } from "@/lib/errors";
 import { getPostHog } from "@/lib/analytics/posthog";
 
 export { getPostHog } from "@/lib/analytics/posthog";
+export {
+  getViralityMetrics,
+  getShareRate,
+  getKFactor,
+  type ViralityMetrics,
+} from "@/lib/analytics/kfactor";
 
 /**
- * Analytics + K-factor (claude.md §10). Thin typed event helpers over PostHog.
+ * Analytics event pipeline (claude.md §10): `run`, `share`, `return` to PostHog,
+ * keyed by visitor id with a toy id property.
  *
- * The capture helpers no-op gracefully when PostHog isn't configured, so the
- * run/share/return paths never fail on analytics. (The dashboard K-factor
- * computation is a §10 follow-up.)
+ * IMPORTANT: callers gate these on cookie consent (lib/consent) before invoking —
+ * PostHog is a third-party processor (§14). The helpers themselves no-op when
+ * PostHog isn't configured, so they never fail a run/share/return.
+ *
+ * The dashboard's share rate / K-factor come from our own rows (see kfactor.ts),
+ * not from PostHog.
  */
 
 export interface RunEvent {
@@ -45,6 +54,7 @@ async function capture(
 export async function captureRun(event: RunEvent): Promise<void> {
   await capture(event.visitorId, "run", {
     toy_id: event.toyId,
+    visitor_id: event.visitorId,
     run_id: event.runId,
     was_free: event.wasFree,
   });
@@ -53,6 +63,7 @@ export async function captureRun(event: RunEvent): Promise<void> {
 export async function captureShare(event: ShareEvent): Promise<void> {
   await capture(event.visitorId, "share", {
     toy_id: event.toyId,
+    visitor_id: event.visitorId,
     run_id: event.runId,
     channel: event.channel,
   });
@@ -61,18 +72,7 @@ export async function captureShare(event: ShareEvent): Promise<void> {
 export async function captureReturn(event: ReturnEvent): Promise<void> {
   await capture(event.visitorId ?? "anonymous", "return", {
     toy_id: event.toyId,
+    visitor_id: event.visitorId,
     utm_source: event.utmSource,
   });
-}
-
-export interface ViralityMetrics {
-  shareRate: number;
-  kFactor: number;
-}
-
-/** Share rate + approximate K-factor for a toy's dashboard (§10). */
-export async function getViralityMetrics(
-  _toyId: string,
-): Promise<ViralityMetrics> {
-  throw new NotImplementedError("analytics.getViralityMetrics");
 }

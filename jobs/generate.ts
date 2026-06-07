@@ -4,6 +4,7 @@ import { moderateImage } from "@/lib/moderation";
 import { storeGeneratedImage } from "@/lib/storage";
 import { renderShareCard } from "@/lib/share/card";
 import { isRasterImageRef } from "@/lib/share/util";
+import { captureRun } from "@/lib/analytics";
 import { parseBrandConfig } from "@/lib/toy/brand";
 import {
   reconcileSuccess,
@@ -38,6 +39,7 @@ interface JobInput {
   prompt?: string;
   name?: string;
   reservation?: { projectedChargeUsd?: number; isFree?: boolean };
+  analyticsConsent?: boolean;
 }
 
 export async function processGenerationJob(jobId: string): Promise<void> {
@@ -126,7 +128,7 @@ export async function processGenerationJob(jobId: string): Promise<void> {
 
     // RECONCILE (success): release reservation, book actual spend, write Run +
     // CreditLedger debit (§7, §11).
-    const { runId, chargedUsd } = await reconcileSuccess({
+    const { runId, chargedUsd, wasFree } = await reconcileSuccess({
       reservation,
       jobId: job.id,
       visitorId: job.visitorId,
@@ -171,6 +173,21 @@ export async function processGenerationJob(jobId: string): Promise<void> {
         runId,
         error: cardError instanceof Error ? cardError.message : String(cardError),
       });
+    }
+
+    // Analytics `run` event (§10) — PostHog only with the visitor's consent,
+    // captured at submit (§14). Non-fatal.
+    if (input.analyticsConsent) {
+      try {
+        await captureRun({
+          toyId: job.toyId,
+          visitorId: job.visitorId,
+          runId,
+          wasFree,
+        });
+      } catch {
+        // analytics never fails a run
+      }
     }
 
     log.info("generation job done", { jobId, model: result.model });

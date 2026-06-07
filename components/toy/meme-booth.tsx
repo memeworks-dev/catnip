@@ -9,6 +9,7 @@ import {
   GracefulState,
   type GracefulStateKind,
 } from "@/components/graceful-state";
+import { ConsentBanner } from "@/components/toy/consent-banner";
 
 interface ToySummary {
   id: string;
@@ -316,6 +317,8 @@ export function MemeBooth({
 
         {step === "softwall" ? <GracefulState kind={softWallKind} /> : null}
       </div>
+
+      <ConsentBanner brand={brand} />
     </main>
   );
 }

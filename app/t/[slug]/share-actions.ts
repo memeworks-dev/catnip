@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { getOrCreateVisitorId } from "@/lib/toy/visitor";
+import { hasAnalyticsConsent } from "@/lib/consent";
 import { captureShare, captureReturn } from "@/lib/analytics";
 import { log } from "@/lib/logger";
 
@@ -27,12 +28,15 @@ export async function recordShare(input: {
     await prisma.shareEvent.create({
       data: { runId: run.id, toyId: run.toyId, channel },
     });
-    await captureShare({
-      toyId: run.toyId,
-      visitorId: run.visitorId,
-      runId: run.id,
-      channel,
-    });
+    // PostHog only with consent (§10, §14); the ShareEvent row is first-party.
+    if (await hasAnalyticsConsent()) {
+      await captureShare({
+        toyId: run.toyId,
+        visitorId: run.visitorId,
+        runId: run.id,
+        channel,
+      });
+    }
   } catch (error) {
     log.warn("recordShare failed (non-fatal)", {
       error: error instanceof Error ? error.message : String(error),
@@ -54,11 +58,14 @@ export async function recordReturn(input: {
     await prisma.returnEvent.create({
       data: { toyId: input.toyId, utmSource: input.utmSource, visitorId },
     });
-    await captureReturn({
-      toyId: input.toyId,
-      visitorId,
-      utmSource: input.utmSource,
-    });
+    // PostHog only with consent (§10, §14); the ReturnEvent row is first-party.
+    if (await hasAnalyticsConsent()) {
+      await captureReturn({
+        toyId: input.toyId,
+        visitorId,
+        utmSource: input.utmSource,
+      });
+    }
   } catch (error) {
     log.warn("recordReturn failed (non-fatal)", {
       error: error instanceof Error ? error.message : String(error),

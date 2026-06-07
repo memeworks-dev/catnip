@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { parseBrandConfig } from "@/lib/toy/brand";
 import { buildMemeBoothPrompt } from "@/lib/toy/prompt";
 import { getOrCreateVisitorId, getClientIp } from "@/lib/toy/visitor";
+import { hasAnalyticsConsent } from "@/lib/consent";
 import { moderateImage } from "@/lib/moderation";
 import { estimateCostUsd } from "@/lib/generation";
 import { pricing } from "@/lib/env";
@@ -119,6 +120,10 @@ export async function submitMemeJob(formData: FormData): Promise<SubmitResult> {
       };
     }
 
+    // Consent for PostHog (§10, §14) — captured now so the async worker can gate
+    // the `run` event without the visitor's request cookies.
+    const analyticsConsent = await hasAnalyticsConsent();
+
     const job = await prisma.generationJob.create({
       data: {
         toyId: toy.id,
@@ -131,6 +136,7 @@ export async function submitMemeJob(formData: FormData): Promise<SubmitResult> {
             projectedChargeUsd: reservation.reservation.projectedChargeUsd,
             isFree: reservation.reservation.isFree,
           },
+          analyticsConsent,
         },
       },
     });
