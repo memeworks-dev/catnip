@@ -1,21 +1,30 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { isClerkConfigured } from "@/lib/auth/config";
 
 /**
- * Host-based routing (claude.md §2, §2A). In Next.js 16 this is the `proxy`
- * convention (formerly `middleware`). Reads the incoming `Host` header and
- * (when built) resolves the Toy for:
- *   - `[slug].catnip.io`  → rewrite to /t/[slug]
- *   - a verified custom domain (e.g. meme.theirbrand.com) → its Toy
- *   - apex `catnip.io` / `www` and `/dashboard` → serve normally
- *
- * Scaffold: pass-through. Keep this edge-safe — only import next/server here, no
- * DB or Node-only SDKs (resolution happens via a cached lookup when built).
+ * Next 16 proxy (formerly middleware). Two jobs:
+ *  - Auth (claude.md §5): when Clerk is configured, protect /dashboard(.*) only —
+ *    toys stay public. clerkMiddleware is mounted ONLY when keys exist, so the
+ *    app boots and toys work without Clerk in dev.
+ *  - Host-based routing (§2, §2A): resolve subdomains / custom domains → a toy.
+ *    Pass-through for now (edge-safe; only next/server imports here).
  */
-export function proxy(_request: NextRequest) {
-  // TODO: const host = _request.headers.get("host");
-  // map subdomain / custom domain → toy slug, then NextResponse.rewrite(...).
+const isDashboard = createRouteMatcher(["/dashboard(.*)"]);
+
+function hostRouting(_request: NextRequest): NextResponse {
+  // TODO: map [slug].catnip.io / custom domain → /t/[slug] (§2A).
   return NextResponse.next();
 }
+
+export const proxy = isClerkConfigured()
+  ? clerkMiddleware(async (auth, request) => {
+      if (isDashboard(request)) {
+        await auth.protect();
+      }
+      return hostRouting(request);
+    })
+  : (request: NextRequest) => hostRouting(request);
 
 export const config = {
   // Run on everything except Next internals and static files.
